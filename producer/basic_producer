@@ -1,0 +1,113 @@
+#!/usr/bin/python2.7
+# -*- coding: utf-8 -*-
+
+import os
+from kafka import KafkaProducer, errors
+import logging
+import json
+from SimpleXMLRPCServer import SimpleXMLRPCServer
+from SocketServer import ThreadingMixIn
+import socket
+import netifaces
+import traceback
+from logger import BasicLog
+
+# producer配置
+BOOTSTRAP_IP = "172.17.0.2:9092" # kafka broker ip，需根据实际情况修改
+DEFAULT_PORT = 4595 # producer监听的端口
+
+# 日志配置
+logger_path = os.getcwd()
+logger_name = 'producer_log'
+logger_level = logging.DEBUG
+
+# 启用日志
+logger = BasicLog(logger_path=logger_path, logger_name=logger_name, logger_level=logger_level).get_log()
+
+# 获取宿主机ip， 默认获取eth0网卡ip，具体需根据宿主机实际情况修改
+def get_host_ip(eth_name='eth0'):
+    try:
+        addrs = netifaces.ifaddresses(eth_name)
+    except Exception:
+        logger.error("Fail to get host ip. %s" % traceback.format_exc())
+        return None
+    return addrs[netifaces.AF_INET][0]['addr']
+
+# 多线程TCP服务器基类，无需变更
+class ThreadRPCServer(ThreadingMixIn, SimpleXMLRPCServer):
+    pass
+
+# Producer基类
+# 可在此基础上修改scan_file函数实现不同的文件读取
+# 需要自行定义msg_pack，对消息进行封装，consumer handler需依照相同格式对消息进行拆封
+# 推荐使用protobuf或者json进行封装
+class BasicProducer(object):
+    
+    def __init__(self, topic):
+        self.topic = topic
+    
+    def send_message(self, message):
+        if not BOOTSTRAP_IP:
+            return 0
+        producer = KafkaProducer(
+            bootstrap_servers=[BOOTSTRAP_IP],
+            # value_serializer参数指定序列化方式，如不指定则默认采用str传输
+            # value_serializer=lambda m: json.dumps(m).encode('utf-8'), # 采用json的方式进行序列化
+        )
+        try:
+            # producer参数设置和kafka有关，具体需要参考kafka官方文档进行设置
+            future = producer.send(topic=self.topic,
+                                   key=None,
+                                   value=message,
+                                   partition=0,
+                     )
+            result = future.get(timeout=10)
+            logger.debug("producer send message " + message)
+            logger.debug(result)
+            return 1
+        except errors.KafkaTimeoutError:
+            logger.error("producer send message time out")
+            logger.error(traceback.format_exc())
+            return -1
+        except Exception as exception:
+            logger.error("producer send message error")
+            logger.error(traceback.format_exc())
+            return -1
+    
+    def scan_file(self, file_type, file_path):
+        data = None
+        with open(file_path, 'rb') as file:
+            data = file.read()
+        return data
+
+    def msg_pack(self, data, file_type):
+        msg = None
+        if data:
+            # 此处添加相应的封装逻辑
+            # 可以根据file_type不同自定义封装格式
+            msg = data
+        else:
+            logger.error("data is None")
+            logger.error(traceback.format_exc())
+        
+        return msg
+    
+    # 该函数对流程进行了组装，在rpc调用时组装亦可
+    def producer_call(self, file_path, file_type):
+        data = self.scan_file(file_type=file_type, file_path=file_path)
+        msg = self.msg_pack(data=data, file_type=file_type)
+        self.send_message(msg)
+        
+
+
+if __name__ == "__main__":
+    # host_ip = get_host_ip()
+    topic = "test"
+    producer_obj = ProducerR(topic)
+    msg = {"test"}
+    # producer_obj.send_message(msg)
+    server = ThreadRPCServer(('localhost', DEFAULT_PORT), allow_none = True)
+    server.register_instance(producer_obj)
+
+    print "Listening on port %s" % DEFAULT_PORT
+    server.serve_forever()
